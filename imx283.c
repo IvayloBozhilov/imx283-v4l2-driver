@@ -1020,7 +1020,7 @@ static void imx283_set_framing_limits(struct imx283 *imx283,
 	 "LIMITS FOR MODE %d @ PIXEL RATE %llu Hz:\n"
 	 "HBLANK min=%llu, max=%llu, def=%llu\n"
 	 "VBLANK min=%u, max=%u, def=%lu\n",
-	 mode->mode, imx283_pixel_rate(imx283, mode),
+	 mode->mode, pixel_rate,
 	 min_hblank, max_hblank, def_hblank,
 	 mode->min_vmax - mode->height,
 	 IMX283_VMAX_MAX - mode->height,
