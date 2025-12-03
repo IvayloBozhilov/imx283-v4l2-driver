@@ -12,6 +12,6 @@ sudo mkdir -p /usr/src/${DRV_IMX}-${DRV_VERSION}
 
 sudo cp -r $(pwd)/* /usr/src/${DRV_IMX}-${DRV_VERSION}
 
-sudo dkms add -m ${DRV_IMX} -v ${DRV_VERSION}
-sudo dkms build -m ${DRV_IMX} -v ${DRV_VERSION}
-sudo dkms install -m ${DRV_IMX} -v ${DRV_VERSION}
+sudo dkms add -m ${DRV_IMX} -v ${DRV_VERSION} --force
+sudo dkms build -m ${DRV_IMX} -v ${DRV_VERSION} --force
+sudo dkms install -m ${DRV_IMX} -v ${DRV_VERSION} --force
