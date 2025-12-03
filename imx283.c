@@ -447,11 +447,11 @@ static const struct imx283_mode supported_modes_12bit[] = {
 		.bpp = 12,
 		.width = 2736,
 		.height = 1824,
-		.min_hmax = 2414, /* Pixels (362 * 480MHz/72MHz + padding) */
+		.min_hmax = 362,
 		.min_vmax = 3840, /* Lines */
 
 		/* 50.00 FPS */
-		.default_hmax = 2500, /* 375 @ 480MHz/72Mhz */
+		.default_hmax = 375,
 		.default_vmax = 3840,
 
 		.veff = 1824,
@@ -521,6 +521,13 @@ static const struct imx283_mode supported_modes_10bit[] = {
 		.default_hmax = 6000, /* 750 @ 576MHz / 72MHz */
 		.default_vmax = 3840,
 
+		.veff = 3648,
+		.vst = 0,
+		.vct = 0,
+
+		.hbin_ratio = 1,
+		.vbin_ratio = 1,
+
 		.min_shr = 10,
 		.horizontal_ob = 96,
 		.vertical_ob = 16,
@@ -529,6 +536,36 @@ static const struct imx283_mode supported_modes_10bit[] = {
 			.left = 108,
 			.width = 5472,
 			.height = 3648,
+		},
+	},
+		{
+		/* 5K @ 30.17 fps readout mode 1A */
+		.mode = IMX283_MODE_1A,
+		.bpp = 10,
+		.width = 5472,
+		.height = 3078,
+		.min_hmax = 5960, /* 745 @ 576MHz / 72MHz */
+		.min_vmax = 3203,
+
+		/* 30.17 FPS */
+		.default_hmax = 6000, /* 750 @ 576MHz / 72MHz */
+		.default_vmax = 3203,
+
+		.veff = 3078,
+		.vst = 0,
+		.vct = 0,
+
+		.hbin_ratio = 1,
+		.vbin_ratio = 1,
+
+		.min_shr = 10,
+		.horizontal_ob = 96,
+		.vertical_ob = 16,
+		.crop = {
+			.top = 40,
+			.left = 108,
+			.width = 5472,
+			.height = 3078,
 		},
 	},
 };
@@ -565,6 +602,7 @@ struct imx283 {
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *vflip;
+	struct v4l2_ctrl *pixel_rate;
 
 	unsigned long link_freq_bitmap;
 
@@ -797,22 +835,32 @@ static int imx283_set_ctrl(struct v4l2_ctrl *ctrl)
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
 		shr = imx283_shr(imx283, mode, ctrl->val);
-		dev_dbg(imx283->dev, "V4L2_CID_EXPOSURE : %d - SHR: %lld\n",
+		dev_info(imx283->dev, "V4L2_CID_EXPOSURE : %d - SHR: %lld\n",
 			ctrl->val, shr);
 		ret = cci_write(imx283->cci, IMX283_REG_SHR, shr, NULL);
 		break;
 
 	case V4L2_CID_HBLANK:
-		pixel_rate = imx283_pixel_rate(imx283, mode);
-		imx283->hmax = imx283_internal_clock(pixel_rate, mode->width + ctrl->val);
-		dev_dbg(imx283->dev, "V4L2_CID_HBLANK : %d  HMAX : %u\n",
+		
+		if(mode->min_hmax<mode->width){
+			pixel_rate = (u64)mode->width * 72;
+			do_div(pixel_rate,mode->min_hmax);
+			pixel_rate *= HZ_PER_MHZ;
+			imx283->hmax = imx283_internal_clock(pixel_rate, mode->width + ctrl->val);
+		}
+		else{
+			pixel_rate = imx283_pixel_rate(imx283, mode);
+			imx283->hmax = imx283_internal_clock(pixel_rate, mode->width + ctrl->val);
+		}
+
+		dev_info(imx283->dev, "V4L2_CID_HBLANK : %d  HMAX : %u\n",
 			ctrl->val, imx283->hmax);
 		ret = cci_write(imx283->cci, IMX283_REG_HMAX, imx283->hmax, NULL);
 		break;
 
 	case V4L2_CID_VBLANK:
 		imx283->vmax = mode->height + ctrl->val;
-		dev_dbg(imx283->dev, "V4L2_CID_VBLANK : %d  VMAX : %u\n",
+		dev_info(imx283->dev, "V4L2_CID_VBLANK : %d  VMAX : %u\n",
 			ctrl->val, imx283->vmax);
 		ret = cci_write(imx283->cci, IMX283_REG_VMAX, imx283->vmax, NULL);
 		break;
@@ -928,7 +976,7 @@ static int imx283_init_state(struct v4l2_subdev *sd,
 static void imx283_set_framing_limits(struct imx283 *imx283,
 				      const struct imx283_mode *mode)
 {
-	u64 pixel_rate = imx283_pixel_rate(imx283, mode);
+	u64 pixel_rate;
 	u64 min_hblank, max_hblank, def_hblank;
 
 	/* Initialise hmax and vmax for exposure calculations */
@@ -939,9 +987,22 @@ static void imx283_set_framing_limits(struct imx283 *imx283,
 	 * Horizontal Blanking
 	 * Convert the HMAX_MAX (72MHz) to Pixel rate values for HBLANK_MAX
 	 */
-	min_hblank = mode->min_hmax - mode->width;
-	max_hblank = imx283_iclk_to_pix(pixel_rate, IMX283_HMAX_MAX) - mode->width;
-	def_hblank = mode->default_hmax - mode->width;
+
+	if(mode->min_hmax < mode->width){
+		pixel_rate = (u64)mode->width * 72;
+		do_div(pixel_rate,mode->min_hmax);
+		pixel_rate *= HZ_PER_MHZ;
+		min_hblank = 0;
+		max_hblank = IMX283_HMAX_MAX - mode->width;
+		def_hblank = imx283_iclk_to_pix(pixel_rate, mode->default_hmax) - mode->width;
+	}else{
+		pixel_rate = imx283_pixel_rate(imx283, mode);
+		min_hblank = mode->min_hmax - mode->width;
+		max_hblank = imx283_iclk_to_pix(pixel_rate, IMX283_HMAX_MAX) - mode->width;
+		def_hblank = mode->default_hmax - mode->width;
+	}
+
+	
 	__v4l2_ctrl_modify_range(imx283->hblank, min_hblank, max_hblank, 1,
 				 def_hblank);
 	__v4l2_ctrl_s_ctrl(imx283->hblank, def_hblank);
@@ -951,6 +1012,21 @@ static void imx283_set_framing_limits(struct imx283 *imx283,
 				 IMX283_VMAX_MAX - mode->height, 1,
 				 mode->default_vmax - mode->height);
 	__v4l2_ctrl_s_ctrl(imx283->vblank, mode->default_vmax - mode->height);
+
+	/* Pixel Rate */
+	__v4l2_ctrl_modify_range(imx283->pixel_rate, pixel_rate, pixel_rate, 1, pixel_rate);
+
+	dev_info(imx283->dev,
+	 "LIMITS FOR MODE %d @ PIXEL RATE %llu Hz:\n"
+	 "HBLANK min=%llu, max=%llu, def=%llu\n"
+	 "VBLANK min=%u, max=%u, def=%lu\n",
+	 mode->mode, imx283_pixel_rate(imx283, mode),
+	 min_hblank, max_hblank, def_hblank,
+	 mode->min_vmax - mode->height,
+	 IMX283_VMAX_MAX - mode->height,
+	 mode->default_vmax - mode->height);
+
+
 }
 
 static int imx283_set_pad_format(struct v4l2_subdev *sd,
@@ -998,7 +1074,7 @@ static int imx283_standby_cancel(struct imx283 *imx283)
 	cci_multi_reg_write(imx283->cci, imx283->freq->regs,
 			    imx283->freq->reg_count, &ret);
 
-	dev_dbg(imx283->dev, "Using clk freq %ld MHz",
+	dev_info(imx283->dev, "Using clk freq %ld MHz",
 		imx283->freq->mhz / HZ_PER_MHZ);
 
 	/* Initialise communication */
@@ -1082,8 +1158,8 @@ static int imx283_start_streaming(struct imx283 *imx283,
 	/* Initialise SVR. Unsupported for now - Always 0 */
 	cci_write(imx283->cci, IMX283_REG_SVR, 0x00, &ret);
 
-	dev_dbg(imx283->dev, "Mode: Size %d x %d\n", mode->width, mode->height);
-	dev_dbg(imx283->dev, "Analogue Crop (in the mode) %d,%d %dx%d\n",
+	dev_info(imx283->dev, "Mode: Size %d x %d\n", mode->width, mode->height);
+	dev_info(imx283->dev, "Analogue Crop (in the mode) %d,%d %dx%d\n",
 		mode->crop.left,
 		mode->crop.top,
 		mode->crop.width,
@@ -1336,7 +1412,7 @@ static int imx283_init_controls(struct imx283 *imx283)
 
 	/* By default, PIXEL_RATE is read only */
 	pixel_rate = imx283_pixel_rate(imx283, mode);
-	v4l2_ctrl_new_std(ctrl_hdlr, &imx283_ctrl_ops,
+	imx283->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, &imx283_ctrl_ops,
 			  V4L2_CID_PIXEL_RATE, pixel_rate,
 			  pixel_rate, 1, pixel_rate);
 
